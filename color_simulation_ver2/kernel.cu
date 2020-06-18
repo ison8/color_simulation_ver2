@@ -190,6 +190,82 @@ void calcGauss(double* gauss_data) {
     }
 }
 
+/* xyz計算カーネル */
+template<int BLOCK_SIZE> __global__ void colorSim(double simNum, double* g_data, double* d65, double* obs_x, double* obs_y, double* obs_z, double* result, int remain, int* d_mesh, int g_cnt,double d_min) {
+    /* CUDAアクセス用変数 */
+    int ix = threadIdx.x;
+    int aPos = 0;
+    double pi = 3.141592;
+
+    /* ガウシアンを足し合わせたものを格納する変数 */
+    __shared__ double g_sum[BLOCK_SIZE];
+    __shared__ double g_tmp[BLOCK_SIZE];
+    /* ガウシアンの最大値を保存する変数 */
+    __shared__ double tmp_max = 0;
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* ガウシアンの足し合わせを行う */
+    for (int i = 0; i < g_cnt; i++) {
+        /* ガウシアンのμ */
+        double mu = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i)];
+        /* ガウシアンのσ */
+        double sigma = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 1];
+        /* 振幅の倍率 */
+        double g_amp = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 2];
+        /* ガウシアンを一時的に格納 */
+        g_tmp[ix] = (1 / (sqrt(2 * pi) * sigma)) * exp(-1 * (((double1)ix + d_min) - mu) * (((double1)ix + d_min) - mu) / (2 * sigma * sigma));
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+
+        /* 最大値を探す */
+        if (ix == 0) {
+            /* 全データを探索する */
+            for (int j = 0; j < BLOCK_SIZE; j++) {
+                /* 最大値更新 */
+                if (tmp_max < g_tmp[j]) {
+                    tmp_max = g_tmp[j];
+                }
+            }
+        }
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+
+        /* ガウシアンを足し合わせる */
+        g_sum[ix] += (g_tmp[ix] / tmp_max * g_amp);
+    }
+
+    /* 最大値を初期化 */
+    tmp_max = 0;
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* 足し合わせたガウシアンを正規化する */
+    if (ix == 0) {
+        /* 最大値を探す */
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            /* 最大値更新 */
+            if (tmp_max < g_sum[i]) {
+                tmp_max = g_sum[i];
+            }
+        }
+    }
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* 正規化する(0.99で正規化) */
+    g_sum[ix] = g_sum[ix] / tmp_max * 0.99;
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+}
+
+
 int main(void) {
     /* データを入れる１次元配列 */
     double* d65, * obs_x, * obs_y, * obs_z, * obs_l, * obs_m, * obs_s, * gauss_data, * result, * fin_result, * lms_result, * lms_fin;
