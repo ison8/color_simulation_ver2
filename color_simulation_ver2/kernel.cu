@@ -174,8 +174,24 @@ int getFileData(double* d65,
     /*********************************************************************/
 }
 
+/* 総和計算の時に使用する変数を計算 */
+int getRemain(void) {
+    /* 余り */
+    int remain = 0;
+
+    /* 余り計算 */
+    for (int i = 1; i < BLOCKSIZE; i *= 2) {
+        remain = BLOCKSIZE - i;
+    }
+
+    /* 余り出力 */
+    return remain;
+}
+
 /* ガウシアン生成 */
 void calcGauss(double* gauss_data) {
+    /* 乱数のシード生成 */
+    srand((unsigned int)time(NULL));
     for (int i = 0; i < (SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER); i += 3) {
         /* μ */
         double mu = MU_MIN + ((double)rand() / RAND_MAX * (double)(MU_MAX - MU_MIN));
@@ -191,7 +207,7 @@ void calcGauss(double* gauss_data) {
 }
 
 /* xyz計算カーネル */
-template<int BLOCK_SIZE> __global__ void colorSim(double simNum, double* g_data, double* d65, double* obs_x, double* obs_y, double* obs_z, double* result, int remain, int* d_mesh, int g_cnt,double d_min) {
+template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, double* d65, double* obs_x, double* obs_y, double* obs_z, double* result, int remain, int* d_mesh, int g_cnt,double d_min) {
     /* CUDAアクセス用変数 */
     int ix = threadIdx.x;
     int aPos = 0;
@@ -199,9 +215,21 @@ template<int BLOCK_SIZE> __global__ void colorSim(double simNum, double* g_data,
 
     /* ガウシアンを足し合わせたものを格納する変数 */
     __shared__ double g_sum[BLOCK_SIZE];
+    g_sum[ix] = 0;
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
     __shared__ double g_tmp[BLOCK_SIZE];
     /* ガウシアンの最大値を保存する変数 */
-    __shared__ double tmp_max = 0;
+    __shared__ double tmp_max;
+    tmp_max = 0;
+
+    /* ガウシアンのμ */
+    double mu;
+    /* ガウシアンのσ */
+    double sigma;
+    /* 振幅の倍率 */
+    double g_amp;
 
     /* ブロック内のスレッド同期 */
     __syncthreads();
@@ -209,19 +237,21 @@ template<int BLOCK_SIZE> __global__ void colorSim(double simNum, double* g_data,
     /* ガウシアンの足し合わせを行う */
     for (int i = 0; i < g_cnt; i++) {
         /* ガウシアンのμ */
-        double mu = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i)];
+        mu = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i)];
         /* ガウシアンのσ */
-        double sigma = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 1];
+        sigma = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 1];
         /* 振幅の倍率 */
-        double g_amp = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 2];
+        g_amp = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 2];
         /* ガウシアンを一時的に格納 */
-        g_tmp[ix] = (1 / (sqrt(2 * pi) * sigma)) * exp(-1 * (((double1)ix + d_min) - mu) * (((double1)ix + d_min) - mu) / (2 * sigma * sigma));
+        g_tmp[ix] = (1 / (sqrt(2 * pi) * sigma)) * exp((-1) * (((double)ix + d_min) - mu) * (((double)ix + d_min) - mu) / (2 * sigma * sigma));
 
         /* ブロック内のスレッド同期 */
         __syncthreads();
 
         /* 最大値を探す */
         if (ix == 0) {
+            /* 最大値初期化 */
+            tmp_max = 0;
             /* 全データを探索する */
             for (int j = 0; j < BLOCK_SIZE; j++) {
                 /* 最大値更新 */
@@ -235,17 +265,16 @@ template<int BLOCK_SIZE> __global__ void colorSim(double simNum, double* g_data,
         __syncthreads();
 
         /* ガウシアンを足し合わせる */
-        g_sum[ix] += (g_tmp[ix] / tmp_max * g_amp);
+        g_sum[ix] = g_sum[ix] + (g_tmp[ix] / tmp_max * g_amp);
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
     }
-
-    /* 最大値を初期化 */
-    tmp_max = 0;
-
-    /* ブロック内のスレッド同期 */
-    __syncthreads();
 
     /* 足し合わせたガウシアンを正規化する */
     if (ix == 0) {
+        /* 最大値を初期化 */
+        tmp_max = 0;
         /* 最大値を探す */
         for (int i = 0; i < BLOCK_SIZE; i++) {
             /* 最大値更新 */
@@ -286,17 +315,42 @@ int main(void) {
     /* ガウシアンの要素を生成 */
     calcGauss(gauss_data);
 
-    /* 出力ディレクトリ */
-    string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v1/";
-    string fname = "test.csv";
-    string o_fname = directory + fname;
+    /* 余り計算 */
+    int remain = getRemain();
 
-    /* ファイル出力ストリーム */
-    ofstream o_file(o_fname);
+    /* CUDA用の変数 */
+    double* d_d65, * d_obs_x, * d_obs_y, * d_obs_z, * d_gauss_data, * d_result, * d_lms;
+    int* d_mesh;
 
-    /* ファイル出力 */
-    for (int i = 0; i < (SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER); i += 3) {
-        o_file << gauss_data[i] << "," << gauss_data[i+1] << "," << gauss_data[i+2] << endl;
-    }
+    /* GPUメモリ確保 */
+    cudaMalloc((void**)&d_d65, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_obs_x, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_obs_y, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_obs_z, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_gauss_data, SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER * sizeof(double));
+    cudaMalloc((void**)&d_result, 3 * DATANUM * CALCNUM * sizeof(double));
+    cudaMalloc((void**)&d_mesh, DATANUM * CALCNUM * sizeof(int));
+
+    /* CUDAへのメモリコピー */
+    cudaMemcpy(d_d65, d65, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_x, obs_l, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_y, obs_m, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_z, obs_s, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gauss_data, gauss_data, SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER * sizeof(double), cudaMemcpyHostToDevice);
+
+    colorSim<DATA_ROW> << <DATANUM, DATA_ROW >> > (0, d_gauss_data, d_d65, d_obs_x, d_obs_y, d_obs_z, d_result, remain, d_mesh, (double)GAUSS_CNT, (double)DATA_MIN);
+
+    ///* 出力ディレクトリ */
+    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v1/";
+    //string fname = "test.csv";
+    //string o_fname = directory + fname;
+
+    ///* ファイル出力ストリーム */
+    //ofstream o_file(o_fname);
+
+    ///* ファイル出力 */
+    //for (int i = 0; i < (SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER); i += 3) {
+    //    o_file << gauss_data[i] << "," << gauss_data[i+1] << "," << gauss_data[i+2] << endl;
+    //}
     return 0;
 }
