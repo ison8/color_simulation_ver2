@@ -24,11 +24,13 @@
 #define DATA_MAX 830	// 使用する周波数の最大値
 #define PI 3.141592		// 円周率
 
-#define BLOCKSIZE 441		// 1ブロック当たりのスレッド数
+#define BLOCKSIZE 471		// 1ブロック当たりのスレッド数
 #define DATANUM 50			// 計算する数
-#define CALCNUM 15000		// べき乗する数
-#define SIMNUM 1000	    	// シミュレーションする回数
-#define LOOPNUM 10			// SIMNUM回のシミュレーション繰り返す回数
+#define CALCNUM 1000		// べき乗する数
+#define SIMNUM 100	    	// シミュレーションする回数
+#define LOOPNUM 1			// SIMNUM回のシミュレーション繰り返す回数
+
+
 #define GAUSS_CNT 10        // 足し合わせるガウシアンの数
 #define GAUSS_PER 3         // ガウシアンのパラメータ数
 
@@ -396,7 +398,7 @@ template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, do
             aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
             result[aPos] = calc_data[0][2];
 
-            //printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
+            printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
         }
 
         /* ブロック同期 */
@@ -514,9 +516,9 @@ int main(void) {
 
     /* CUDAへのメモリコピー */
     cudaMemcpy(d_d65, d65, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_obs_x, obs_l, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_obs_y, obs_m, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_obs_z, obs_s, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_x, obs_x, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_y, obs_y, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_z, obs_z, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
     cudaMemcpy(d_gauss_data, gauss_data, SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER * sizeof(double), cudaMemcpyHostToDevice);
 
     for (int i = 0; i < LOOPNUM; i++) {
@@ -560,7 +562,8 @@ int main(void) {
 
     /* 出力ディレクトリ */
     //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v1/";
-    string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v2/";
+    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v2/";
+    string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_15000_10_v1/";
     
     /* 出力したファイルの情報を記録するファイル */
     string f_info = "sim_file_info.txt";
