@@ -39,6 +39,8 @@
 
 using namespace std;
 
+/* aaaaaaaaaaaaa */
+
 /* CUDAエラーチェック */
 #define cudaCheckErrors(msg) \
     do { \
