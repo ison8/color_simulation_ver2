@@ -26,16 +26,16 @@
 
 #define BLOCKSIZE 471		// 1ブロック当たりのスレッド数
 #define DATANUM 50			// 計算する数
-#define CALCNUM 1000		// べき乗する数
-#define SIMNUM 100	    	// シミュレーションする回数
-#define LOOPNUM 1			// SIMNUM回のシミュレーション繰り返す回数
+#define CALCNUM 15000		// べき乗する数
+#define SIMNUM 1000	    	// シミュレーションする回数
+#define LOOPNUM 10			// SIMNUM回のシミュレーション繰り返す回数
 
 
 #define GAUSS_CNT 10        // 足し合わせるガウシアンの数
 #define GAUSS_PER 3         // ガウシアンのパラメータ数
 
-#define MU_MIN  360         // μの最小値
-#define MU_MAX  830         // μの最大値
+#define MU_MIN  390         // μの最小値
+#define MU_MAX  650         // μの最大値
 
 using namespace std;
 
@@ -101,40 +101,50 @@ int getFileData(double* d65,
 
 
     /*********************************************************************/
-    ///* 標準観測者(CIE LMS)の読み込み */
-    ///* ファイルオープン */
-    //fp_obs = fopen("./std_obs_10deg.csv", "r");
-    ///* 正しく開けているかをチェック */
-    //if (fp_obs == NULL) {
-    //    cout << "File open error" << endl;
-    //    return -1;
-    //}
+    /* 標準観測者(CIE LMS)の読み込み */
+    /* ファイルオープン */
+    fp_obs = fopen("./std_obs_10deg.csv", "r");
+    /* 正しく開けているかをチェック */
+    if (fp_obs == NULL) {
+        cout << "File open error" << endl;
+        return -1;
+    }
 
-    ///* ファイル読み込み */
-    //for (int i = 0; i < OBS_ROW; i++) {
-    //    /* 1時的に波長とデータを格納する変数 */
-    //    double tmp_spt = 0, tmp_l = 0, tmp_m = 0, tmp_s = 0;
-    //    /* 1行ずつ読み込む */
-    //    ret = fscanf(fp_obs, "%lf, %lf, %lf, %lf", &tmp_spt, &tmp_l, &tmp_m, &tmp_s);
-    //    /* 終了判定 */
-    //    if (tmp_spt > DATA_MAX) {
-    //        break;
-    //    }
-    //    /* カウンタの更新 */
-    //    if (tmp_spt >= DATA_MIN) {
-    //        obs_l[count] = tmp_l;
-    //        obs_m[count] = tmp_m;
-    //        obs_s[count] = tmp_s;
-    //        count++;
-    //    }
-    //    /* エラーを検出した際の処理 */
-    //    if (ret == EOF) {
-    //        cout << "error" << endl;
-    //        return -1;
-    //    }
-    //}
-    //fclose(fp_obs);
-    //count = 0;
+    /* ファイル読み込み */
+    for (int i = 0; i < (DATA_ROW - OBS_ROW); i++) {
+        obs_l[i] = 0;
+        obs_m[i] = 0;
+        obs_s[i] = 0;
+        count++;
+    }
+    for (int i = 0; i < OBS_ROW; i++) {
+        /* 1時的に波長とデータを格納する変数 */
+        double tmp_spt = 0, tmp_l = 0, tmp_m = 0, tmp_s = 0;
+        /* 1行ずつ読み込む */
+        ret = fscanf(fp_obs, "%lf, %lf, %lf, %lf", &tmp_spt, &tmp_l, &tmp_m, &tmp_s);
+        /* 終了判定 */
+        if (tmp_spt > DATA_MAX) {
+            break;
+        }
+        /* カウンタの更新 */
+        if (tmp_spt >= DATA_MIN) {
+            obs_l[count] = tmp_l;
+            obs_m[count] = tmp_m;
+            obs_s[count] = tmp_s;
+            count++;
+        }
+        /* エラーを検出した際の処理 */
+        if (ret == EOF) {
+            cout << "error" << endl;
+            return -1;
+        }
+    }
+    fclose(fp_obs);
+    count = 0;
+
+    /*for (int i = 0; i < DATA_ROW; i++) {
+        printf("%lf %lf %lf\n", obs_l[i], obs_m[i], obs_s[i]);
+    }*/
     /*********************************************************************/
     
 
@@ -398,7 +408,7 @@ template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, do
             aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
             result[aPos] = calc_data[0][2];
 
-            printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
+            //printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
         }
 
         /* ブロック同期 */
@@ -466,12 +476,292 @@ template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, do
         __syncthreads();
     }
 }
+template<int BLOCK_SIZE> __global__ void colorSimLMS(int simNum, double* g_data, double* d65, double* obs_x, double* obs_y, double* obs_z, double* result, int remain, int* d_mesh, int g_cnt, double d_min) {
+    /* CUDAアクセス用変数 */
+    int ix = threadIdx.x;
+    int aPos = 0;
+    double pi = 3.141592;
+
+    /* 結果を格納するシェアードメモリ */
+    __shared__ double calc_data[BLOCK_SIZE][3];
+
+    /* ガウシアンを足し合わせたものを格納する変数 */
+    __shared__ double g_sum[BLOCK_SIZE];
+    g_sum[ix] = 0;
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    __shared__ double g_tmp[BLOCK_SIZE];
+    /* ガウシアンの最大値を保存する変数 */
+    __shared__ double tmp_max;
+    tmp_max = 0;
+
+    /* ガウシアンのμ */
+    double mu;
+    /* ガウシアンのσ */
+    double sigma;
+    /* 振幅の倍率 */
+    double g_amp;
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* ガウシアンの足し合わせを行う */
+    for (int i = 0; i < g_cnt; i++) {
+        /* ガウシアンのμ */
+        mu = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i)];
+        /* ガウシアンのσ */
+        sigma = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 1];
+        /* 振幅の倍率 */
+        g_amp = g_data[((simNum + blockIdx.x) * 3 * g_cnt) + (3 * i) + 2];
+        /* ガウシアンを一時的に格納 */
+        g_tmp[ix] = (1 / (sqrt(2 * pi) * sigma)) * exp((-1) * (((double)ix + d_min) - mu) * (((double)ix + d_min) - mu) / (2 * sigma * sigma));
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+
+        /* 最大値を探す */
+        if (ix == 0) {
+            /* 最大値初期化 */
+            tmp_max = 0;
+            /* 全データを探索する */
+            for (int j = 0; j < BLOCK_SIZE; j++) {
+                /* 最大値更新 */
+                if (tmp_max < g_tmp[j]) {
+                    tmp_max = g_tmp[j];
+                }
+            }
+        }
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+
+        /* ガウシアンを足し合わせる */
+        g_sum[ix] = g_sum[ix] + (g_tmp[ix] / tmp_max * g_amp);
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+    }
+
+    /* 足し合わせたガウシアンを正規化する */
+    if (ix == 0) {
+        /* 最大値を初期化 */
+        tmp_max = 0;
+        /* 最大値を探す */
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            /* 最大値更新 */
+            if (tmp_max < g_sum[i]) {
+                tmp_max = g_sum[i];
+            }
+        }
+    }
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* 正規化する(0.99で正規化) */
+    g_sum[ix] = g_sum[ix] / tmp_max * 0.99;
+
+    /* ブロック内のスレッド同期 */
+    __syncthreads();
+
+    /* 積分計算をする */
+    for (int i = 0; i < CALCNUM; i++) {
+        /* シェアードメモリにデータ格納 */
+        calc_data[ix][0] = d65[ix] * obs_x[ix] * pow(g_sum[ix], (pow(0.001 * (double)i, 2)));
+        calc_data[ix][1] = d65[ix] * obs_y[ix] * pow(g_sum[ix], (pow(0.001 * (double)i, 2)));
+        calc_data[ix][2] = d65[ix] * obs_z[ix] * pow(g_sum[ix], (pow(0.001 * (double)i, 2)));
+
+        /* ブロック同期 */
+        __syncthreads();
+
+        /* ブロックごとにリダクション処理(総和計算) */
+        /* 余りが0でない場合 */
+        if (remain != 0) {
+            /* 余った要素のシェアードメモリを加算する */
+            if (ix < remain) {
+                calc_data[ix][0] += calc_data[BLOCK_SIZE - ix - 1][0];
+                calc_data[ix][1] += calc_data[BLOCK_SIZE - ix - 1][1];
+                calc_data[ix][2] += calc_data[BLOCK_SIZE - ix - 1][2];
+            }
+        }
+
+        /* 総和計算する */
+        if (BLOCK_SIZE >= 512) {
+            if (ix < 256) {
+                calc_data[ix][0] += calc_data[ix + 256][0];
+                calc_data[ix][1] += calc_data[ix + 256][1];
+                calc_data[ix][2] += calc_data[ix + 256][2];
+            }__syncthreads();
+        }
+        if (BLOCK_SIZE >= 256) {
+            if (ix < 128) {
+                calc_data[ix][0] += calc_data[ix + 128][0];
+                calc_data[ix][1] += calc_data[ix + 128][1];
+                calc_data[ix][2] += calc_data[ix + 128][2];
+            }__syncthreads();
+        }
+        if (BLOCK_SIZE >= 128) {
+            if (ix < 64) {
+                calc_data[ix][0] += calc_data[ix + 64][0];
+                calc_data[ix][1] += calc_data[ix + 64][1];
+                calc_data[ix][2] += calc_data[ix + 64][2];
+            }__syncthreads();
+        }
+        if (BLOCK_SIZE >= 64) {
+            if (ix < 32) {
+                calc_data[ix][0] += calc_data[ix + 32][0];
+                calc_data[ix][1] += calc_data[ix + 32][1];
+                calc_data[ix][2] += calc_data[ix + 32][2];
+            } __syncthreads();
+        }
+        if (BLOCK_SIZE >= 32) {
+            if (ix < 16) {
+                calc_data[ix][0] += calc_data[ix + 16][0];
+                calc_data[ix][1] += calc_data[ix + 16][1];
+                calc_data[ix][2] += calc_data[ix + 16][2];
+            } __syncthreads();
+        }
+        if (BLOCK_SIZE >= 16) {
+            if (ix < 8) {
+                calc_data[ix][0] += calc_data[ix + 8][0];
+                calc_data[ix][1] += calc_data[ix + 8][1];
+                calc_data[ix][2] += calc_data[ix + 8][2];
+            }__syncthreads();
+        }
+        if (BLOCK_SIZE >= 8) {
+            if (ix < 4) {
+                calc_data[ix][0] += calc_data[ix + 4][0];
+                calc_data[ix][1] += calc_data[ix + 4][1];
+                calc_data[ix][2] += calc_data[ix + 4][2];
+            } __syncthreads();
+        }
+        if (BLOCK_SIZE >= 4) {
+            if (ix < 2) {
+                calc_data[ix][0] += calc_data[ix + 2][0];
+                calc_data[ix][1] += calc_data[ix + 2][1];
+                calc_data[ix][2] += calc_data[ix + 2][2];
+            } __syncthreads();
+        }
+        if (BLOCK_SIZE >= 2) {
+            if (ix < 1) {
+                calc_data[ix][0] += calc_data[ix + 1][0];
+                calc_data[ix][1] += calc_data[ix + 1][1];
+                calc_data[ix][2] += calc_data[ix + 1][2];
+            } __syncthreads();
+        }
+
+        /* 値出力 */
+        if (ix == 0) {
+            /* aPos更新 */
+            aPos = blockIdx.x * 3 * CALCNUM + i;
+            result[aPos] = calc_data[0][0];
+
+            /* aPos更新 */
+            aPos = blockIdx.x * 3 * CALCNUM + i + CALCNUM;
+            result[aPos] = calc_data[0][1];
+
+            /* aPos更新 */
+            aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
+            result[aPos] = calc_data[0][2];
+
+            //printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
+        }
+
+        /* ブロック同期 */
+        __syncthreads();
+
+        /* メッシュの番号をふる */
+        /* メッシュ用の変数 */
+        double x, y;
+        /* フラグxy */
+        int f_x, f_y,f_exp;
+        /* メッシュ判定用の変数 */
+        double m_x, m_y;
+
+        /* f_x,f_yの初期化 */
+        f_x = 0;
+        f_y = 0;
+        f_exp = 0;  // 範囲を超えているものを判定
+
+        /* aPos初期化 */
+        aPos = 0;
+
+        /* x方向 */
+        if (ix < 50) {
+            //printf("kita\n");
+            /* xyの計算 */
+            x = calc_data[0][0] / (calc_data[0][0] + calc_data[0][1]);
+            /* メッシュの判定 */
+            m_x = (double)ix * 0.02;
+            if (m_x <= x && (m_x + 0.02) > x) {
+                f_x = 1;
+            }
+        }
+        /* y方向 */
+        if (ix >= 64 && ix < 114) {
+            /* xyの計算 */
+            y = calc_data[0][2] / (calc_data[0][0] + calc_data[0][1]);
+            /* メッシュの判定 */
+            m_y = (double)(ix - 64) * 0.02;
+            if (m_y <= y && (m_y + 0.02) > y) {
+                f_y = 1;
+            }
+        }
+
+        /* 範囲を超えているものを判定 */
+        if (ix == 128) {
+            /* xyの計算 */
+            x = calc_data[0][0] / (calc_data[0][0] + calc_data[0][1]);
+            y = calc_data[0][2] / (calc_data[0][0] + calc_data[0][1]);
+            /* メッシュの判定 */
+            if (x > 1 || y > 1) {
+                f_exp = 1;
+            }
+        }
+
+        /* ブロック同期 */
+        __syncthreads();
+
+        /* メッシュの位置計算 */
+        if (ix < 50) {
+            if (f_x == 1) {
+                aPos = blockIdx.x * CALCNUM + i;
+                d_mesh[aPos] = ix;
+                //printf("%lf %lf %d\n", x, y, d_mesh[aPos]);
+            }
+        }
+
+        /* ブロック同期 */
+        __syncthreads();
+
+        /* メッシュの位置計算 */
+        if (ix >= 64 && ix < 114) {
+            if (f_y == 1) {
+                aPos = blockIdx.x * CALCNUM + i;
+                d_mesh[aPos] += (ix - 64) * 50;
+                /*printf("%lf %lf %d\n", x, y, d_mesh[aPos]);*/
+            }
+        }
+
+        /* ブロック同期 */
+        __syncthreads();
+
+        /* メッシュ範囲外計算 */
+        if (ix == 128) {
+            if (f_exp == 1) {
+                aPos = blockIdx.x * CALCNUM + i;
+                d_mesh[aPos] = -2;
+            }
+        }
+    }
+}
 
 
 int main(void) {
     /* データを入れる１次元配列 */
     double* d65, * obs_x, * obs_y, * obs_z, * obs_l, * obs_m, * obs_s, * gauss_data, * result, * fin_result, * lms_result, * lms_fin;
-    int* mesh_result, * mesh_f_result;
+    int* mesh_result, * mesh_f_result, * lms_mesh;
     /* 配列のメモリ確保 */
     d65 = new double[DATA_ROW];
     obs_l = new double[DATA_ROW];
@@ -487,6 +777,7 @@ int main(void) {
     mesh_f_result = new int[SIMNUM * CALCNUM * LOOPNUM];
     lms_result = new double[3 * DATANUM * CALCNUM];
     lms_fin = new double[3 * SIMNUM * CALCNUM * LOOPNUM];
+    lms_mesh = new int[SIMNUM * CALCNUM * LOOPNUM];
 
     /* ファイル読み込み関数実行 */
     int f_result = getFileData(d65, obs_l, obs_m, obs_s, obs_x, obs_y, obs_z);
@@ -498,7 +789,7 @@ int main(void) {
     int remain = getRemain();
 
     /* CUDA用の変数 */
-    double* d_d65, * d_obs_x, * d_obs_y, * d_obs_z, * d_gauss_data, * d_result, * d_lms;
+    double* d_d65, * d_obs_x, * d_obs_y, * d_obs_z, * d_gauss_data, * d_result;
     int* d_mesh;
 
     /* 結果コピーのときのカウンタ */
@@ -541,6 +832,46 @@ int main(void) {
         }
     }
 
+    /* LMS計算に使わないメモリの開放 */
+    cudaFree(d_obs_x);
+    cudaFree(d_obs_y);
+    cudaFree(d_obs_z);
+
+    /* LMS計算で使用するCUDAメモリの確保 */
+    double* d_obs_l, * d_obs_m, * d_obs_s;
+    cudaMalloc((void**)&d_obs_l, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_obs_m, DATA_ROW * sizeof(double));
+    cudaMalloc((void**)&d_obs_s, DATA_ROW * sizeof(double));
+    cudaMemcpy(d_obs_l, obs_l, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_m, obs_m, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_obs_s, obs_s, DATA_ROW * sizeof(double), cudaMemcpyHostToDevice);
+
+    /* カウンタ更新 */
+    mem_cnt = 0;    // 積分結果コピー用
+    mesh_cnt = 0;   // メッシュデータコピー用
+
+    /* LMS計算 */
+    for (int i = 0; i < LOOPNUM; i++) {
+        for (int j = 0; j < SIMNUM; j += DATANUM) {
+            int sim_pos = (i * SIMNUM) + j;
+            /* 積分計算 */
+            colorSimLMS<DATA_ROW> << <DATANUM, DATA_ROW >> > (sim_pos, d_gauss_data, d_d65, d_obs_l, d_obs_m, d_obs_s, d_result, remain, d_mesh, (double)GAUSS_CNT, (double)DATA_MIN);
+            cudaDeviceSynchronize();
+            /* 結果のコピー */
+            cudaMemcpy(result, d_result, 3 * DATANUM * CALCNUM * sizeof(double), cudaMemcpyDeviceToHost);
+            cudaMemcpy(mesh_result, d_mesh, DATANUM * CALCNUM * sizeof(int), cudaMemcpyDeviceToHost);
+            for (int k = 0; k < (3 * DATANUM * CALCNUM); k++) {
+                lms_fin[mem_cnt] = result[k];
+                mem_cnt++;
+            }
+            for (int k = 0; k < (DATANUM * CALCNUM); k++) {
+                lms_mesh[mesh_cnt] = mesh_result[k];
+                mesh_cnt++;
+            }
+        }
+    }
+
+
     /* 結果が終了条件を満たしているときに値を0にする */
     for (int i = 0; i < LOOPNUM; i++) {
         for (int j = 0; j < SIMNUM; j++) {
@@ -552,9 +883,13 @@ int main(void) {
                     fin_result[aPos] = 0;
                     fin_result[aPos + CALCNUM] = 0;
                     fin_result[aPos + (CALCNUM * 2)] = 0;
+                    lms_fin[aPos] = 0;
+                    lms_fin[aPos + CALCNUM] = 0;
+                    lms_fin[aPos + (CALCNUM * 2)] = 0;
 
                     aPos = (i * SIMNUM * CALCNUM) + (j * CALCNUM) + k;
                     mesh_f_result[aPos] = -1;
+                    lms_mesh[aPos] = -1;
                 }
             }
         }
@@ -563,7 +898,8 @@ int main(void) {
     /* 出力ディレクトリ */
     //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v1/";
     //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v2/";
-    string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_15000_10_v1/";
+    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_15000_10_v1/";
+    string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v2/";
     
     /* 出力したファイルの情報を記録するファイル */
     string f_info = "sim_file_info.txt";
@@ -606,12 +942,20 @@ int main(void) {
                 double Y = fin_result[apos + CALCNUM];
                 double Z = fin_result[apos + (CALCNUM * 2)];
 
+                double L = lms_fin[apos];
+                double M = lms_fin[apos + CALCNUM];
+                double S = lms_fin[apos + (CALCNUM * 2)];
+
+                double lms_x = L / (L + M);
+                double lms_y = S / (L + M);
+
                 /* k が最後のとき */
                 if (k == (SIMNUM - 1)) {
                     /* XYZ == 0のとき */
                     if (X == 0 && Y == 0 && Z == 0) {
                         o_file1 << ",,";
                         o_file2 << ",,," << mesh_f_result[m_apos];
+                        o_file3 << ",," << lms_mesh[m_apos];
                     }
                     /* それ以外のとき */
                     else {
@@ -621,6 +965,7 @@ int main(void) {
 
                         o_file1 << X << "," << Y << "," << Z;
                         o_file2 << x << "," << y << "," << z << "," << mesh_f_result[m_apos];
+                        o_file3 << lms_x << "," << lms_y << "," << lms_mesh[m_apos];
                     }
                 }
                 /* kが最後以外のとき */
@@ -629,6 +974,7 @@ int main(void) {
                     if (X == 0 && Y == 0 && Z == 0) {
                         o_file1 << ",,,";
                         o_file2 << ",,," << mesh_f_result[m_apos] << ",";
+                        o_file3 << ",," << lms_mesh[m_apos] << ",";
                     }
                     /* それ以外のとき */
                     else {
@@ -638,6 +984,7 @@ int main(void) {
 
                         o_file1 << X << "," << Y << "," << Z << ",";
                         o_file2 << x << "," << y << "," << z << "," << mesh_f_result[m_apos] << ",";
+                        o_file3 << lms_x << "," << lms_y << "," << lms_mesh[m_apos] << ",";
                     }
                 }
             }
@@ -660,18 +1007,24 @@ int main(void) {
 
     /* メモリ解放 */
     cudaFree(d_result);
+    cudaFree(d_mesh);
     cudaFree(d_d65);
     cudaFree(d_gauss_data);
     cudaFree(d_obs_x);
     cudaFree(d_obs_y);
     cudaFree(d_obs_z);
-    //cudaFree(d_lms);
+    cudaFree(d_obs_l);
+    cudaFree(d_obs_m);
+    cudaFree(d_obs_s);
 
     /* ホストメモリ解放 */
     delete[] d65;
     delete[] obs_x;
     delete[] obs_y;
     delete[] obs_z;
+    delete[] obs_l;
+    delete[] obs_m;
+    delete[] obs_s;
     delete[] gauss_data;
     delete[] result;
     delete[] fin_result;
