@@ -34,8 +34,8 @@
 #define GAUSS_CNT 10        // 足し合わせるガウシアンの数
 #define GAUSS_PER 3         // ガウシアンのパラメータ数
 
-#define MU_MIN  390         // μの最小値
-#define MU_MAX  650         // μの最大値
+#define MU_MIN  360         // μの最小値
+#define MU_MAX  830         // μの最大値
 
 using namespace std;
 
@@ -818,12 +818,19 @@ int main(void) {
    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v2/";
    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_15000_10_v1/";
     //string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v2/";
-    string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v3/";
+    string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v6/";
 
     /* 出力したファイルの情報を記録するファイル */
     string f_info = "sim_file_info.txt";
+    string spt_info = "spectral.txt";
     f_info = directory + f_info;
+    spt_info = directory + spt_info;
     ofstream o_f_info(f_info);
+    ofstream o_spt_info(spt_info);
+
+    /* スペクトル情報を出力 */
+    o_spt_info << "gaussian spectral range" << endl;
+    o_spt_info << MU_MIN << "-" << MU_MAX << endl;
 
     /* データを入れる１次元配列 */
     double* d65, * obs_x, * obs_y, * obs_z, * obs_l, * obs_m, * obs_s, * gauss_data, * result, * fin_result, * lms_result, * lms_fin;
@@ -853,6 +860,14 @@ int main(void) {
 
     /* ガウシアンの要素を生成 */
     calcGauss(gauss_data);
+
+    /* ガウシアンのデータを出力 */
+    string g_info = "gaussian_data.csv";
+    g_info = directory + g_info;
+    ofstream o_g_info(g_info);
+    for (int i = 0; (i < SIMNUM * LOOPNUM * GAUSS_CNT); i++) {
+        o_g_info << gauss_data[3 * i] << "," << gauss_data[(3 * i) + 1] << "," << gauss_data[(3 * i) + 2] << endl;
+    }
 
     /* 余り計算 */
     int remain = getRemain();
