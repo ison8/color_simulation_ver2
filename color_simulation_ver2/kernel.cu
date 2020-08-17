@@ -12,6 +12,7 @@
 #include <string>
 #include <iomanip>
 #include <vector>
+#include <random>
 
 #define D65_ROW 531		// D65の行数
 #define D65_COL 2		// D65の列数
@@ -28,7 +29,7 @@
 #define DATANUM 50			// 計算する数
 #define CALCNUM 15000		// べき乗する数
 #define SIMNUM 1000	    	// シミュレーションする回数
-#define LOOPNUM 10			// SIMNUM回のシミュレーション繰り返す回数
+#define LOOPNUM 20			// SIMNUM回のシミュレーション繰り返す回数
 
 
 #define GAUSS_CNT 10        // 足し合わせるガウシアンの数
@@ -36,6 +37,8 @@
 
 #define MU_MIN  360         // μの最小値
 #define MU_MAX  830         // μの最大値
+#define TARGET_MU 500       // μの固定値
+#define TARGET_SIG 50      // σの固定値
 
 using namespace std;
 
@@ -203,19 +206,57 @@ int getRemain(void) {
 
 /* ガウシアン生成 */
 void calcGauss(double* gauss_data) {
+    /* 正規分布の確率密度関数を設定する */
+    random_device seed_gen;
+    default_random_engine generator(seed_gen());
+    
+    /* TARGET_MU と TARGET_SIG  */
+    /*int T_MU[12] = { 480, 480, 480, 530, 530, 530, 580, 580, 580,630,630,630 };
+    int T_SIG[12] = { 50,100,200,50,100,200,50,100,200,50,100,200 };*/
+    /*int T_MU[4] = { 480, 530, 580, 630 };
+    int T_SIG[4] = { 200,200,200,200 };*/
+    int T_MU[4] = { 480,480,580,580};
+    int T_SIG[4] = { 25,50,25,50 };
+
+    /* カウンタ */
+    int count = 0;
+
     /* 乱数のシード生成 */
     srand((unsigned int)time(NULL));
-    for (int i = 0; i < (SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER); i += 3) {
-        /* μ */
-        double mu = MU_MIN + ((double)rand() / RAND_MAX * (double)(MU_MAX - MU_MIN));
-        /* σ */
-        double sigma = 5 + (95 * (double)rand() / RAND_MAX);
-        /* 振幅の最大値 */
-        double g_amp = (double)rand() / RAND_MAX;
-        /* gauss_dataに格納 */
-        gauss_data[i] = mu;
-        gauss_data[i + 1] = sigma;
-        gauss_data[i + 2] = g_amp;
+    for (int j = 0; j < (LOOPNUM / 10); j++) {
+        /* 正規分布の確率密度関数を設定する */
+        normal_distribution<double> distribution1(T_MU[j], T_SIG[j]);
+        normal_distribution<double> distribution2(T_MU[j+2], T_SIG[j+2]);
+        for (int i = 0; i < (SIMNUM * 10 * GAUSS_CNT * GAUSS_PER); i += 3) {
+            double mu = 0;      // μを初期化
+            ///* 10回に1回はμを固定する */
+            //if (i % 10 == 0) {
+            //    mu = (double)TARGET_MU;
+            //}
+            //else {
+            //    /* μ */
+            //    mu = MU_MIN + ((double)rand() / RAND_MAX * (double)(MU_MAX - MU_MIN));
+            //}
+
+            double mu_dec = (double)rand() / RAND_MAX;
+            if (mu_dec > 0.5) {
+                /* muを正規分布の確率密度関数によって生成する */
+                mu = (double)distribution1(generator);
+            }
+            else {
+                /* muを正規分布の確率密度関数によって生成する */
+                mu = (double)distribution2(generator);
+            }
+            /* σ */
+            double sigma = 5 + (95 * (double)rand() / RAND_MAX);
+            /* 振幅の最大値 */
+            double g_amp = (double)rand() / RAND_MAX;
+            /* gauss_dataに格納 */
+            gauss_data[count] = mu;
+            gauss_data[count + 1] = sigma;
+            gauss_data[count + 2] = g_amp;
+            count += 3;
+        }
     }
 }
 
@@ -278,6 +319,14 @@ template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, do
                     tmp_max = g_tmp[j];
                 }
             }
+        }
+
+        /* ブロック内のスレッド同期 */
+        __syncthreads();
+
+        /* 最大値が小さすぎた場合(0.01以下）g_ampを0にする */
+        if (tmp_max <= 0.01) {
+            g_amp = 0;
         }
 
         /* ブロック内のスレッド同期 */
@@ -400,18 +449,33 @@ template<int BLOCK_SIZE> __global__ void colorSim(int simNum, double* g_data, do
 
         /* 値出力 */
         if (ix == 0) {
-            /* aPos更新 */
-            aPos = blockIdx.x * 3 * CALCNUM + i;
-            result[aPos] = calc_data[0][0] / (calc_data[0][0] + calc_data[0][1] + calc_data[0][2]);
+            /* 0割を防止 */
+            if (calc_data[0][0] + calc_data[0][1] + calc_data[0][2] > 0.0000000001) {
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i;
+                result[aPos] = calc_data[0][0] / (calc_data[0][0] + calc_data[0][1] + calc_data[0][2]);
 
-            /* aPos更新 */
-            aPos = blockIdx.x * 3 * CALCNUM + i + CALCNUM;
-            result[aPos] = calc_data[0][1] / (calc_data[0][0] + calc_data[0][1] + calc_data[0][2]);
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i + CALCNUM;
+                result[aPos] = calc_data[0][1] / (calc_data[0][0] + calc_data[0][1] + calc_data[0][2]);
 
-            /* aPos更新 */
-            aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
-            result[aPos] = calc_data[0][1];
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
+                result[aPos] = calc_data[0][1];
+            }
+            else {
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i;
+                result[aPos] = 0.0;
 
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i + CALCNUM;
+                result[aPos] = 0.0;
+
+                /* aPos更新 */
+                aPos = blockIdx.x * 3 * CALCNUM + i + (2 * CALCNUM);
+                result[aPos] = 0.0;
+            }
             //printf("%.3lf %.3lf %.3lf\n", calc_data[0][0], calc_data[0][1], calc_data[0][2]);
         }
 
@@ -818,7 +882,7 @@ int main(void) {
    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_10000_10_v2/";
    //string directory = "C:/Users/KoidaLab-WorkStation/Desktop/isomura_ws/color_simulation_result/sim_1000_15000_10_v1/";
     //string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v2/";
-    string directory = "G:/isomura_data/sim_result/sim_1000_15000_10_v6/";
+    string directory = "G:/isomura_data/sim_result/sim_1000_15000_mu_480_580/";
 
     /* 出力したファイルの情報を記録するファイル */
     string f_info = "sim_file_info.txt";
@@ -897,13 +961,26 @@ int main(void) {
     cudaMemcpy(d_gauss_data, gauss_data, SIMNUM * LOOPNUM * GAUSS_CNT * GAUSS_PER * sizeof(double), cudaMemcpyHostToDevice);
 
     /* 10回ループ */
+
+    int cnt = 0;
+
     for (int i = 0; i < LOOPNUM; i++) {
         /* 出力ファイル名 */
         string fname1 = "sim_result_xyY_1000_";
         string fname3 = "sim_result_lms_1000_";
         string fend = ".csv";
-        fname1 = directory + fname1 + to_string(i + 1) + fend;
-        fname3 = directory + fname3 + to_string(i + 1) + fend;
+        //int fnum = (cnt * 30) + (i + 21) - (cnt * 10);
+        /*fname1 = directory + fname1 + to_string((cnt * 30) + i + 21 - ((cnt - 1) * 10)) + fend;
+        fname3 = directory + fname3 + to_string((cnt * 30) + i + 21 - ((cnt - 1) * 10)) + fend;*/
+        /*fname1 = directory + fname1 + to_string(fnum) + fend;
+        fname3 = directory + fname3 + to_string(fnum) + fend;*/
+        fname1 = directory + fname1 + to_string(i+1) + fend;
+        fname3 = directory + fname3 + to_string(i+1) + fend;
+        if ((i + 1) % 10 == 0) {
+            cnt++;
+        }
+        /*fname1 = directory + fname1 + to_string(i + 1) + fend;
+        fname3 = directory + fname3 + to_string(i + 1) + fend;*/
 
         /* 出力したファイルの情報を記録するファイルにファイル名を出力 */
         o_f_info << fname1 << endl;
